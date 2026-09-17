@@ -2300,6 +2300,7 @@ static void handle_reclaim_writeback(unsigned long nr_taken,
 		wakeup_flusher_threads(WB_REASON_VMSCAN);
 
 	sc->nr.dirty += stat->nr_dirty;
+	sc->nr.unqueued_dirty += stat->nr_unqueued_dirty;
 	sc->nr.congested += stat->nr_congested;
 	sc->nr.writeback += stat->nr_writeback;
 	sc->nr.immediate += stat->nr_immediate;
