@@ -24,6 +24,7 @@
 #include <linux/device.h>
 #include <linux/genhd.h>
 #include <linux/highmem.h>
+#include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/backing-dev.h>
 #include <linux/string.h>
@@ -1963,6 +1964,33 @@ static int zram_add(void)
 	device_add_disk(NULL, zram->disk, zram_disk_attr_groups);
 
 	strlcpy(zram->compressor, default_compressor, sizeof(zram->compressor));
+
+#ifdef CONFIG_KHAJE_4GB_BUILTIN_TUNING
+	/* Khaje 4GB: auto-init zram0 to 60% RAM with lz4kd (default compressor already lz4kd) */
+	if (device_id == 0) {
+		u64 khaje_disksize;
+		struct zcomp *comp;
+
+		/* 60% of total RAM */
+		khaje_disksize = (u64)totalram_pages() * PAGE_SIZE * 60 / 100;
+		khaje_disksize = PAGE_ALIGN(khaje_disksize);
+		if (khaje_disksize && zram_meta_alloc(zram, khaje_disksize)) {
+			comp = zcomp_create(zram->compressor);
+			if (!IS_ERR(comp)) {
+				zram->comp = comp;
+				zram->disksize = khaje_disksize;
+				set_capacity_and_notify(zram->disk,
+					zram->disksize >> SECTOR_SHIFT);
+				pr_info("khaje_builtin: zram0 auto disksize %llu MB (60%% RAM) comp=%s\n",
+					khaje_disksize >> 20, zram->compressor);
+			} else {
+				zram_meta_free(zram, khaje_disksize);
+				pr_err("khaje_builtin: zram comp create failed %ld\n",
+					PTR_ERR(comp));
+			}
+		}
+	}
+#endif
 
 	zram_debugfs_register(zram);
 	pr_info("Added device: %s\n", zram->disk->disk_name);

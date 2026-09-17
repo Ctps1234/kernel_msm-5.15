@@ -4376,7 +4376,11 @@ static bool age_lruvec(struct lruvec *lruvec, struct scan_control *sc, unsigned 
 }
 
 /* to protect the working set of the last N jiffies */
+#ifdef CONFIG_KHAJE_4GB_BUILTIN_TUNING
+unsigned long lru_gen_min_ttl __read_mostly = 0; /* set in khaje tuning to 1000ms */
+#else
 static unsigned long lru_gen_min_ttl __read_mostly;
+#endif
 
 static void lru_gen_age_node(struct pglist_data *pgdat, struct scan_control *sc)
 {

@@ -981,4 +981,20 @@ config SPECULATIVE_PAGE_FAULT
 	  an unsupported case, the fault handler falls back to classical
 	  processing using the mmap read lock.
 
+config KHAJE_4GB_BUILTIN_TUNING
+	bool "Khaje 4GB builtin tuning (no external module)"
+	default y
+	help
+	  Aplica tuning de fluidez + bateria direto no kernel, sem precisar de
+	  modulo Magisk/KernelSU externo. Define balanced como padrao:
+	  - vm: swappiness 100, page-cluster 0, vfs_cache_pressure 130,
+	    watermark_scale_factor 120, dirty 5/20
+	  - MGLRU min_ttl 1000ms
+	  - sched: uclamp min 0, rate_limit 2000us, teo idle
+	  - zram: 60% RAM, lz4kd, swappiness 100
+	  - io: SSG default, read_ahead 128, tcp BBR
+	  Ver README-KHAJE-4GB.md para detalhes. O tuning e aplicado em
+	  late_initcall e pode ser ajustado em runtime via sysfs/procfs
+	  normalmente.
+
 endmenu

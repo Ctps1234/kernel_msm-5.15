@@ -71,7 +71,11 @@
  * If no ancestor relationship:
  * arbitrary, since it's serialized on rename_lock
  */
+#ifdef CONFIG_KHAJE_4GB_BUILTIN_TUNING
+int sysctl_vfs_cache_pressure __read_mostly = 130;
+#else
 int sysctl_vfs_cache_pressure __read_mostly = 100;
+#endif
 EXPORT_SYMBOL_GPL(sysctl_vfs_cache_pressure);
 
 __cacheline_aligned_in_smp DEFINE_SEQLOCK(rename_lock);

@@ -141,12 +141,17 @@ jobs:
             if ! grep -q "CONFIG_LRU_GEN_ENABLED=y" "$CONFIG_FILE"; then
               cat "$FRAGMENT" >> "$CONFIG_FILE"
             fi
+            # Garante que builtin tuning esteja presente mesmo se fragment já foi parcialmente aplicado
+            grep -q "CONFIG_KHAJE_4GB_BUILTIN_TUNING=y" "$CONFIG_FILE" || echo "CONFIG_KHAJE_4GB_BUILTIN_TUNING=y" >> "$CONFIG_FILE"
+            grep -q "CONFIG_DEFAULT_BBR=y" "$CONFIG_FILE" || echo "CONFIG_DEFAULT_BBR=y" >> "$CONFIG_FILE"
           fi
 
           echo "--- verificacao tuning ---"
-          for opt in "CONFIG_LRU_GEN_ENABLED=y" "CONFIG_ZRAM_DEF_COMP_LZ4KD=y" "# CONFIG_KASAN is not set"; do
+          for opt in "CONFIG_LRU_GEN_ENABLED=y" "CONFIG_ZRAM_DEF_COMP_LZ4KD=y" "CONFIG_KHAJE_4GB_BUILTIN_TUNING=y" "CONFIG_DEFAULT_BBR=y" "# CONFIG_KASAN is not set"; do
             grep -qF "$opt" "$CONFIG_FILE" && echo "ok: $opt" || echo "AVISO: ausente -> $opt"
           done
+          echo "--- builtin files ---"
+          ls -lh mm/khaje_builtin_tuning.c mm/Kconfig | tail -n 5 || true
 
       - name: "🔧 Setup KSU Next with SUSFS"
         if: matrix.variant == 'ksu'
@@ -264,10 +269,11 @@ jobs:
           path: ksrc
           fetch-depth: 1
 
-      - name: "🐚 Tuning module (shell, sem compilar)"
+      - name: "🐚 Tuning module (opcional, builtin já aplica)"
         run: |
+          echo "Builtin tuning ativo (CONFIG_KHAJE_4GB_BUILTIN_TUNING=y) - módulo externo opcional"
           if [ -f "ksrc/tuning/build-module.sh" ]; then
-            ( cd ksrc && sh tuning/build-module.sh )
+            ( cd ksrc && sh tuning/build-module.sh ) || echo "build-module falhou, ignorando (builtin já cobre)"
             cp ksrc/tuning/dist/*.zip "$GITHUB_WORKSPACE/khaje-tuning.zip" || true
           fi
 

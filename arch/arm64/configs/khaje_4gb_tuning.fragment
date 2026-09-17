@@ -99,3 +99,17 @@ CONFIG_IOSCHED_BFQ=y
 CONFIG_KALLSYMS=y
 CONFIG_TMPFS_XATTR=y
 CONFIG_TMPFS_POSIX_ACL=y
+
+#
+# 8) Khaje builtin tuning - aplica perfil balanced sem módulo externo
+#    Elimina necessidade de tuning/khaje-tune.sh e tuning/build-module.sh
+#
+CONFIG_KHAJE_4GB_BUILTIN_TUNING=y
+
+#
+# 9) Rede: BBR como congestion default para melhor throughput/latência
+#
+CONFIG_TCP_CONG_BBR=y
+CONFIG_DEFAULT_BBR=y
+# CONFIG_DEFAULT_CUBIC is not set
+CONFIG_DEFAULT_TCP_CONG="bbr"

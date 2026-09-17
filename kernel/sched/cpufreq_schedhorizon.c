@@ -831,8 +831,13 @@ static int sugov_init(struct cpufreq_policy *policy)
 		goto stop_kthread;
 	}
 
+#ifdef CONFIG_KHAJE_4GB_BUILTIN_TUNING
+	tunables->up_rate_limit_us = 1000;
+	tunables->down_rate_limit_us = 2000;
+#else
 	tunables->up_rate_limit_us = 500;
 	tunables->down_rate_limit_us = 1000;
+#endif
 	tunables->efficient_freq = default_efficient_freq;
 	tunables->nefficient_freq = ARRAY_SIZE(default_efficient_freq);
 	tunables->up_delay = default_up_delay;
