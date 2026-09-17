@@ -93,8 +93,9 @@ static int dnotify_handle_event(struct fsnotify_mark *inode_mark, u32 mask,
 			prev = &dn->dn_next;
 			continue;
 		}
-		fown = &dn->dn_filp->f_owner;
-		send_sigio(fown, dn->dn_fd, POLL_MSG);
+		fown = file_f_owner(dn->dn_filp);
+		if (fown)
+			send_sigio(fown, dn->dn_fd, POLL_MSG);
 		if (dn->dn_mask & FS_DN_MULTISHOT)
 			prev = &dn->dn_next;
 		else {

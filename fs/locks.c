@@ -1419,9 +1419,12 @@ int lease_modify(struct file_lock *fl, int arg, struct list_head *dispose)
 	locks_wake_up_blocks(fl);
 	if (arg == F_UNLCK) {
 		struct file *filp = fl->fl_file;
+		struct fown_struct *f_owner;
 
 		f_delown(filp);
-		filp->f_owner.signum = 0;
+		f_owner = file_f_owner(filp);
+		if (f_owner)
+			f_owner->signum = 0;
 		fasync_helper(0, fl->fl_file, 0, &fl->fl_fasync);
 		if (fl->fl_fasync != NULL) {
 			printk(KERN_ERR "locks_delete_lock: fasync == %p\n", fl->fl_fasync);

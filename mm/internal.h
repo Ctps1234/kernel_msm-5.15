@@ -75,7 +75,7 @@ void force_page_cache_ra(struct readahead_control *, unsigned long nr);
 static inline void force_page_cache_readahead(struct address_space *mapping,
 		struct file *file, pgoff_t index, unsigned long nr_to_read)
 {
-	DEFINE_READAHEAD(ractl, file, &file->f_ra, mapping, index);
+	DEFINE_READAHEAD(ractl, file, &file->f_u.f_ra, mapping, index);
 	force_page_cache_ra(&ractl, nr_to_read);
 }
 

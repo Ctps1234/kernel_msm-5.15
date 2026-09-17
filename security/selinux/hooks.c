@@ -4029,8 +4029,8 @@ static int selinux_file_send_sigiotask(struct task_struct *tsk,
 	u32 perm;
 	struct file_security_struct *fsec;
 
-	/* struct fown_struct is never outside the context of a struct file */
-	file = container_of(fown, struct file, f_owner);
+	/* fown contains file backpointer */
+	file = fown->file;
 
 	fsec = selinux_file(file);
 
