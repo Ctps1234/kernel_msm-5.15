@@ -1,0 +1,469 @@
+name: "Build Khaje KSU-Next (standalone, sem builder)"
+
+# Workflow 100% próprio, sem depender de repo sync, manifest ou builder externo.
+# Faz build direto com clang + make, integra KSU-Next oficial + SUSFS e mantém
+# o tuning de 4GB (khaje_4gb_tuning.fragment).
+#
+# Como usar:
+# - Actions -> Build Khaje KSU-Next (standalone) -> Run workflow
+# - Escolha defconfig, branch do KSU-Next, localversion e variante (noksu / ksu-next / both)
+
+on:
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: "Defconfig base (khaje)"
+        required: true
+        type: choice
+        default: "unified"
+        options:
+          - "unified"
+          - "gki"
+          - "khaje-stock"
+      ksuNextBranch:
+        description: "Branch/tag do KSU-Next (next, stable, dev, ou tag vX.Y.Z)"
+        required: true
+        type: string
+        default: "next"
+      localVersion:
+        description: "CONFIG_LOCALVERSION (ex: -khaje-ksu-next)"
+        required: false
+        type: string
+        default: "-khaje-ksu-next"
+      buildVariant:
+        description: "Variante de build"
+        required: true
+        type: choice
+        default: "both"
+        options:
+          - "noksu"
+          - "ksu-next"
+          - "both"
+      useClangVersion:
+        description: "Clang pré-compilado (r547379 recomendado para 5.15 GKI)"
+        required: true
+        type: choice
+        default: "r547379"
+        options:
+          - "r547379"
+          - "r530567"
+          - "system"
+
+env:
+  OUT_DIR: out
+  CLANG_DIR: clang-toolchains
+
+jobs:
+  Build-Kernel:
+    name: "🔨 Build ${{ matrix.variant }} (${{ inputs.defconfig }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(
+          inputs.buildVariant == 'both' && '["noksu", "ksu-next"]' ||
+          inputs.buildVariant == 'ksu-next' && '["ksu-next"]' ||
+          '["noksu"]' ) }}
+    steps:
+      - name: "📥 Checkout kernel source"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: "🧹 Limpeza inicial"
+        run: |
+          rm -rf ${{ env.OUT_DIR }} KernelSU KernelSU-Next drivers/kernelsu susfs4ksu
+          mkdir -p ${{ env.OUT_DIR }}
+          echo "BUILD_TIME=$(date +'%Y-%m-%d_%H%M')" >> $GITHUB_ENV
+          echo "DEFCONFIG_NAME=${{ inputs.defconfig }}_defconfig" >> $GITHUB_ENV
+
+      - name: "📐 Setup SWAP 12GB"
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 12
+
+      - name: "📦 Instalar dependências"
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev libncurses-dev \
+            python3 python3-pip pahole dwarves cpio rsync git wget curl \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            lld llvm
+          # liburing e outras opcionais para kernels mais novos
+          sudo apt-get install -y --no-install-recommends liburing-dev || true
+
+      - name: "🔧 Setup Clang (sem builder)"
+        run: |
+          set -e
+          CLANG_VER="${{ inputs.useClangVersion }}"
+          mkdir -p ${{ env.CLANG_DIR }}
+          if [ "$CLANG_VER" = "system" ]; then
+            echo "Usando clang do sistema"
+            clang --version
+            echo "CLANG_PATH=$(which clang)" >> $GITHUB_ENV
+            echo "CLANG_BIN_DIR=$(dirname $(which clang))" >> $GITHUB_ENV
+          else
+            # Tenta baixar do mirror topnotchfreaks, fallback para AOSP
+            URL1="https://github.com/topnotchfreaks/clang/releases/download/v1.0.0/clang-${CLANG_VER}.tar.gz"
+            URL2="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-${CLANG_VER}.tar.gz"
+            DEST="${{ env.CLANG_DIR }}/clang-${CLANG_VER}.tar.gz"
+            EXTRACT_DIR="${{ env.CLANG_DIR }}/clang-${CLANG_VER}"
+            mkdir -p "$EXTRACT_DIR"
+            echo "Baixando clang $CLANG_VER ..."
+            if ! wget -q --show-progress -O "$DEST" "$URL1"; then
+              echo "Falha no mirror1, tentando mirror AOSP (pode precisar de curl -L)..."
+              curl -L -o "$DEST" "$URL2" || wget -O "$DEST" "$URL1"
+            fi
+            tar -xzf "$DEST" -C "$EXTRACT_DIR" --strip-components=1 || tar -xzf "$DEST" -C "$EXTRACT_DIR"
+            echo "Clang extraído em $EXTRACT_DIR"
+            ls -lh "$EXTRACT_DIR/bin" | head -n 20
+            echo "CLANG_PATH=$EXTRACT_DIR/bin/clang" >> $GITHUB_ENV
+            echo "CLANG_BIN_DIR=$EXTRACT_DIR/bin" >> $GITHUB_ENV
+            echo "$EXTRACT_DIR/bin" >> $GITHUB_PATH
+            # Export para steps seguintes
+            echo "PATH=$EXTRACT_DIR/bin:$PATH" >> $GITHUB_ENV
+          fi
+
+      - name: "⚙️ Configurar defconfig + tuning 4GB"
+        run: |
+          set -e
+          CONFIG_FILE="arch/arm64/configs/${DEFCONFIG_NAME}"
+          FRAGMENT="arch/arm64/configs/khaje_4gb_tuning.fragment"
+
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "❌ Defconfig não encontrado: $CONFIG_FILE"
+            ls arch/arm64/configs/ | grep -E "unified|gki|khaje"
+            exit 1
+          fi
+
+          echo "=== Defconfig base: $CONFIG_FILE ==="
+          # Localversion custom
+          if [ -n "${{ inputs.localVersion }}" ]; then
+            sed -i '/^CONFIG_LOCALVERSION=/d' "$CONFIG_FILE"
+            echo "CONFIG_LOCALVERSION=\"${{ inputs.localVersion }}\"" >> "$CONFIG_FILE"
+          fi
+
+          # Garantias mínimas para KSU/SUSFS e apps (xattr tmpfs)
+          for opt in CONFIG_KALLSYMS=y CONFIG_TMPFS_XATTR=y CONFIG_TMPFS_POSIX_ACL=y; do
+            key=$(echo $opt | cut -d= -f1)
+            grep -q "^${key}=" "$CONFIG_FILE" || echo "$opt" >> "$CONFIG_FILE"
+          done
+
+          # Se o fragmento existe e o defconfig ainda não tem o bloco, aplica
+          # Na prática unified/gki/khaje-stock já têm o bloco duplicado, mas garantimos merge
+          if [ -f "$FRAGMENT" ]; then
+            echo "--- Aplicando fragmento $FRAGMENT (merge) ---"
+            # Remove duplicatas do bloco anterior para evitar crescimento infinito se workflow rodar localmente
+            # Mantemos simples: só checamos se LRU_GEN_ENABLED já existe, senão append
+            if ! grep -q "CONFIG_LRU_GEN_ENABLED=y" "$CONFIG_FILE"; then
+              cat "$FRAGMENT" >> "$CONFIG_FILE"
+              echo "Fragmento adicionado"
+            else
+              echo "Fragmento já presente (LRU_GEN_ENABLED encontrado), pulando append"
+            fi
+          fi
+
+          echo "--- Verificação do tuning ---"
+          for opt in "CONFIG_LRU_GEN_ENABLED=y" "CONFIG_ZRAM_DEF_COMP_LZ4KD=y" "# CONFIG_KASAN is not set"; do
+            grep -qF "$opt" "$CONFIG_FILE" && echo "ok: $opt" || echo "AVISO: ausente -> $opt"
+          done
+
+          # Log das últimas 50 linhas do defconfig para debug
+          echo "--- tail defconfig ---"
+          tail -n 80 "$CONFIG_FILE"
+
+      - name: "🔧 Setup KSU-Next + SUSFS (apenas variante ksu-next)"
+        if: matrix.variant == 'ksu-next'
+        run: |
+          set -e
+          rm -rf KernelSU KernelSU-Next drivers/kernelsu susfs4ksu
+
+          KSU_BRANCH="${{ inputs.ksuNextBranch }}"
+          echo "📦 Instalando KSU-Next branch/tag: $KSU_BRANCH"
+
+          # Método oficial recomendado: setup.sh do KSU-Next
+          # Usamos curl + bash, mas com fallback para clone manual se falhar
+          if curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/${KSU_BRANCH}/kernel/setup.sh" -o /tmp/ksu-next-setup.sh; then
+            echo "setup.sh baixado, executando..."
+            bash /tmp/ksu-next-setup.sh "$KSU_BRANCH" || bash /tmp/ksu-next-setup.sh next || true
+          else
+            echo "Falha ao baixar setup.sh do branch $KSU_BRANCH, tentando branch next..."
+            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" -o /tmp/ksu-next-setup.sh
+            bash /tmp/ksu-next-setup.sh next || true
+          fi
+
+          # Fallback manual: clone direto
+          if [ ! -d "KernelSU" ] && [ ! -d "KernelSU-Next" ]; then
+            echo "⚠️ setup.sh não criou diretório, fazendo clone manual..."
+            git clone --depth=1 --branch "$KSU_BRANCH" https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next || \
+            git clone --depth=1 --branch next https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
+          fi
+
+          # Garante symlink drivers/kernelsu
+          if [ -d "KernelSU-Next" ]; then
+            rm -rf drivers/kernelsu
+            ln -sf ../KernelSU-Next/kernel drivers/kernelsu
+            echo "Symlink criado: drivers/kernelsu -> ../KernelSU-Next/kernel"
+          elif [ -d "KernelSU" ]; then
+            rm -rf drivers/kernelsu
+            # setup.sh do KSU-Next cria KernelSU (não KernelSU-Next) em algumas versões
+            if [ -d "KernelSU/kernel" ]; then
+              ln -sf ../KernelSU/kernel drivers/kernelsu || ln -sf ../KernelSU drivers/kernelsu
+            else
+              ln -sf ../KernelSU drivers/kernelsu
+            fi
+          fi
+
+          # Patch Makefile e Kconfig se necessário (setup.sh já faz, mas garantimos)
+          if [ -f "drivers/Makefile" ]; then
+            grep -q 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          fi
+          if [ -f "drivers/Kconfig" ]; then
+            grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          fi
+
+          ls -la drivers/kernelsu || true
+          cat drivers/kernelsu/Kconfig | head -n 50 || true
+
+          echo "📦 Cloning SUSFS4KSU..."
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android13-5.15
+
+          SUSFS_PATCH="susfs4ksu/kernel_patches/50_add_susfs_in_gki-android13-5.15.patch"
+          echo "🔧 Aplicando patch SUSFS kernel: $SUSFS_PATCH"
+          if [ -f "$SUSFS_PATCH" ]; then
+            if patch -p1 < "$SUSFS_PATCH"; then
+              echo "✅ SUSFS patch aplicado"
+            else
+              echo "⚠️ patch -p1 falhou, tentando copiar arquivos manualmente"
+            fi
+          else
+            echo "⚠️ Patch não encontrado, tentando localizar..."
+            find susfs4ksu -name "*.patch" | head -n 20
+          fi
+
+          # Copia arquivos SUSFS manualmente (garantia)
+          mkdir -p fs include/linux
+          cp -f susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c 2>/dev/null || echo "susfs.c não encontrado no path esperado"
+          cp -f susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/susfs.h 2>/dev/null || true
+          [ -f susfs4ksu/kernel_patches/include/linux/susfs_def.h ] && cp -f susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/susfs_def.h || true
+
+          # Alguns kernels precisam de susfs em outros paths
+          if [ -f "fs/susfs.c" ]; then
+            echo "✅ fs/susfs.c presente"
+          else
+            echo "❌ fs/susfs.c ausente - tentando outros locais"
+            find susfs4ksu -name "susfs.c" -exec cp -f {} fs/susfs.c \; 2>/dev/null || true
+          fi
+
+          rm -rf susfs4ksu
+
+          # Adiciona configs KSU-Next + SUSFS no defconfig
+          CONFIG_FILE="arch/arm64/configs/${DEFCONFIG_NAME}"
+          echo "--- Adicionando CONFIG_KSU e SUSFS em $CONFIG_FILE ---"
+          # Remove configs antigas se existirem para evitar duplicata conflitante
+          sed -i '/^CONFIG_KSU=/d' "$CONFIG_FILE"
+          sed -i '/^CONFIG_KSU_SUSFS/d' "$CONFIG_FILE"
+
+          cat >> "$CONFIG_FILE" << 'EOF'
+          CONFIG_KSU=y
+          CONFIG_KPROBES=y
+          CONFIG_HAVE_KPROBES=y
+          CONFIG_KPROBE_EVENTS=y
+          CONFIG_OVERLAY_FS=y
+          # SUSFS
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_SU=y
+          EOF
+
+          echo "=== KSU-Next + SUSFS configurado ==="
+
+      - name: "🧩 Patch KABI (opcional, sysvipc)"
+        continue-on-error: true
+        run: |
+          # Fix para compatibilidade com módulos GKI abaixo de 6.12
+          curl -sL "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch" | git apply -v || echo "KABI patch falhou ou já aplicado, continuando..."
+
+      - name: "🔨 Build kernel (standalone, sem repo/build.sh)"
+        run: |
+          set -e
+          echo "=== Info de build ==="
+          echo "DEFCONFIG: ${DEFCONFIG_NAME}"
+          echo "VARIANT: ${{ matrix.variant }}"
+          echo "OUT_DIR: ${{ env.OUT_DIR }}"
+          echo "CLANG_BIN: ${{ env.CLANG_BIN_DIR }}"
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH="${{ env.CLANG_BIN_DIR }}:$PATH"
+          if [ -n "${{ env.CLANG_BIN_DIR }}" ]; then
+            export PATH="${{ env.CLANG_BIN_DIR }}:$PATH"
+          fi
+
+          # Verifica clang
+          clang --version || ${{ env.CLANG_BIN_DIR }}/clang --version || true
+          ld.lld --version || true
+
+          # Limpa out se for re-build
+          rm -rf ${{ env.OUT_DIR }}
+          mkdir -p ${{ env.OUT_DIR }}
+
+          # Configuração
+          # Usamos LLVM=1 para build com clang, como GKI faz
+          MAKE_ARGS="ARCH=arm64 O=${{ env.OUT_DIR }} LLVM=1 LLVM_IAS=1"
+          # Se clang custom não tiver llvm binutils no PATH, usa CROSS_COMPILE do sistema
+          MAKE_ARGS="$MAKE_ARGS CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+          # Para clang r547379, precisa de CLANG_TRIPLE
+          MAKE_ARGS="$MAKE_ARGS CLANG_TRIPLE=aarch64-linux-gnu-"
+
+          echo "make $MAKE_ARGS ${DEFCONFIG_NAME}"
+          make $MAKE_ARGS ${DEFCONFIG_NAME}
+
+          # Se tiver fragmento, faz merge via merge_config.sh (se disponível)
+          FRAGMENT="arch/arm64/configs/khaje_4gb_tuning.fragment"
+          if [ -f "$FRAGMENT" ] && [ -f "scripts/kconfig/merge_config.sh" ]; then
+            echo "--- merge_config.sh com fragmento ---"
+            # Só faz merge se LRU_GEN_ENABLED não estiver no .config final
+            if ! grep -q "CONFIG_LRU_GEN_ENABLED=y" ${{ env.OUT_DIR }}/.config; then
+              ./scripts/kconfig/merge_config.sh -m -O ${{ env.OUT_DIR }} ${{ env.OUT_DIR }}/.config "$FRAGMENT" || true
+              make $MAKE_ARGS olddefconfig
+            fi
+          fi
+
+          # Para variante noksu, garante KSU desabilitado
+          if [ "${{ matrix.variant }}" = "noksu" ]; then
+            echo "--- Variante noksu: desabilitando KSU ---"
+            ./scripts/config --file ${{ env.OUT_DIR }}/.config -d CONFIG_KSU -d CONFIG_KSU_SUSFS || true
+            # Também remove do defconfig temporário
+            sed -i '/CONFIG_KSU/d' ${{ env.OUT_DIR }}/.config || true
+            make $MAKE_ARGS olddefconfig
+          fi
+
+          echo "--- .config final (grep KSU/SUSFS/LRU/ZRAM) ---"
+          grep -E "KSU|SUSFS|LRU_GEN|ZRAM|KASAN|KFENCE" ${{ env.OUT_DIR }}/.config | head -n 100 || true
+
+          echo "--- Iniciando compilação ---"
+          make $MAKE_ARGS -j$(nproc --all) 2>&1 | tee build.log
+
+          echo "--- Build finalizado, verificando artefatos ---"
+          ls -lh ${{ env.OUT_DIR }}/arch/arm64/boot/ || true
+          if [ -f "${{ env.OUT_DIR }}/arch/arm64/boot/Image" ]; then
+            echo "✅ Image gerado"
+            cp ${{ env.OUT_DIR }}/arch/arm64/boot/Image Image.${{ matrix.variant }}
+            ls -lh Image.${{ matrix.variant }}
+          else
+            echo "❌ Image não encontrado!"
+            ls -R ${{ env.OUT_DIR }}/arch/ | head -n 100
+            tail -n 200 build.log
+            exit 1
+          fi
+
+          # Opcional: Image.gz, Image.lz4, dtb
+          cp ${{ env.OUT_DIR }}/arch/arm64/boot/Image.gz Image.gz.${{ matrix.variant }} 2>/dev/null || true
+          cp ${{ env.OUT_DIR }}/arch/arm64/boot/Image.lz4 Image.lz4.${{ matrix.variant }} 2>/dev/null || true
+
+      - name: "📦 Preparar artefato"
+        run: |
+          ls -lh Image.* || true
+          echo "BUILD_TIME=${{ env.BUILD_TIME }}" >> $GITHUB_ENV
+
+      - name: "📤 Upload kernel Image"
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.variant }}-${{ inputs.defconfig }}-${{ env.BUILD_TIME }}
+          path: |
+            Image.${{ matrix.variant }}
+            Image.gz.${{ matrix.variant }}
+            Image.lz4.${{ matrix.variant }}
+          if-no-files-found: warn
+          retention-days: 7
+
+  Package-Kernels:
+    name: "📦 Empacotar AnyKernel3 + tuning"
+    runs-on: ubuntu-latest
+    needs: Build-Kernel
+    steps:
+      - name: "📥 Download artifacts"
+        uses: actions/download-artifact@v4
+        with:
+          path: ./kernels/
+
+      - name: "📥 Checkout para tuning module"
+        uses: actions/checkout@v4
+        with:
+          path: ksrc
+          fetch-depth: 1
+
+      - name: "🐚 Build tuning module (shell, sem compilar)"
+        run: |
+          set -e
+          if [ -f "ksrc/tuning/build-module.sh" ]; then
+            ( cd ksrc && sh tuning/build-module.sh )
+            cp ksrc/tuning/dist/*.zip "$GITHUB_WORKSPACE/khaje-tuning.zip" || true
+            ls -lh "$GITHUB_WORKSPACE"/*.zip || true
+          else
+            echo "tuning/build-module.sh não encontrado, pulando"
+          fi
+
+      - name: "📦 Criar ZIP flashável AnyKernel3"
+        run: |
+          set -e
+          BUILD_TIME=$(date +'%Y-%m-%d')
+          git clone --depth=1 https://github.com/topnotchfreaks/AnyKernel3 -b master AnyKernel3
+
+          # Copia todas as Images encontradas
+          find kernels -type f -name "Image*" | while read f; do
+            echo "Copiando $f"
+            cp "$f" AnyKernel3/
+          done
+
+          ls -lh AnyKernel3/Image* || true
+
+          # Nome do ZIP com KSU-Next para diferenciar do builder antigo
+          ZIP_NAME="AnyKernel3_KSU-Next_khaje4gb_${{ inputs.defconfig }}_${BUILD_TIME}_standalone.zip"
+          cd AnyKernel3
+          zip -r9 "../$ZIP_NAME" * -x .git/*
+          cd ..
+          echo "ZIP_PATH=$(pwd)/$ZIP_NAME" >> $GITHUB_ENV
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+          ls -lh "$ZIP_NAME"
+
+      - name: "📤 Upload pacote final"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_PATH }}
+          retention-days: 14
+
+      - name: "📤 Upload tuning module"
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: khaje-4gb-tuning-module
+          path: khaje-tuning.zip
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: "📝 Resumo"
+        run: |
+          echo "### Build standalone KSU-Next concluído" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Defconfig: ${{ inputs.defconfig }}" >> $GITHUB_STEP_SUMMARY
+          echo "- KSU-Next branch: ${{ inputs.ksuNextBranch }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Variante: ${{ inputs.buildVariant }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Clang: ${{ inputs.useClangVersion }}" >> $GITHUB_STEP_SUMMARY
+          echo "- ZIP: ${{ env.ZIP_NAME }}" >> $GITHUB_STEP_SUMMARY

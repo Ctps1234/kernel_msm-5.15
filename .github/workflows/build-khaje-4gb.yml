@@ -1,8 +1,9 @@
-name: "Build Khaje 4GB (fluidez + bateria)"
+name: "Build Khaje 4GB (fluidez + bateria) - KSU Next"
 
 # Build do kernel khaje (SM6225) com o defconfig otimizado para 4 GB.
-# Baseado no workflow "Build kernels" já usado no repo; muda o default do
-# defconfig (unified) e empacota também o módulo de tuning de runtime.
+# Agora usando KSU Next oficial no lugar do WildKSU.
+# Mantém compatibilidade com o builder baseado em repo/manifest (legado),
+# mas o novo workflow standalone (build-khaje-ksu-next-standalone.yml) é 100% próprio.
 
 env:
   OUT_DIR: "out"
@@ -32,10 +33,10 @@ on:
           - "gki"
           - "khaje-stock"
       localVersion:
-        description: "Custom localversion name (e.g., -khaje4gb)"
+        description: "Custom localversion name (e.g., -khaje-ksu-next)"
         required: false
         type: string
-        default: "-khaje4gb"
+        default: "-khaje-ksu-next"
       buildKSU:
         description: "Build KSU variant?"
         required: true
@@ -140,14 +141,31 @@ jobs:
             grep -qF "$opt" "$CONFIG_FILE" && echo "ok: $opt" || echo "AVISO: ausente -> $opt"
           done
 
-      - name: "🔧 Setup Wild KSU with SUSFS"
+      - name: "🔧 Setup KSU Next with SUSFS"
         if: matrix.variant == 'ksu'
         working-directory: ./${{ env.kernelDir }}/${{ env.kernelName }}
         run: |
-          rm -rf ./KernelSU ./drivers/kernelsu
+          rm -rf ./KernelSU ./KernelSU-Next ./drivers/kernelsu
 
-          echo "📦 Installing Wild KSU..."
-          curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s stable
+          echo "📦 Installing KSU Next (official)..."
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+
+          # Fallback manual caso setup.sh mude de comportamento
+          if [ ! -d "./KernelSU" ] && [ ! -d "./KernelSU-Next" ]; then
+            echo "⚠️ setup.sh não criou diretório, fazendo clone manual..."
+            git clone --depth=1 --branch next https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
+            ln -sf ../KernelSU-Next/kernel drivers/kernelsu
+          fi
+
+          # Garante integração em drivers/Makefile e drivers/Kconfig
+          if [ -d "drivers" ]; then
+            grep -q 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+            grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          fi
+
+          if [ -d "KernelSU-Next" ] && [ ! -e "drivers/kernelsu" ]; then
+            ln -sf ../KernelSU-Next/kernel drivers/kernelsu
+          fi
 
           echo "📦 Cloning SUSFS4KSU for kernel patches..."
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android13-5.15
@@ -169,8 +187,11 @@ jobs:
 
           rm -rf susfs4ksu
 
-          if [ ! -L "drivers/kernelsu" ]; then
+          if [ -d "KernelSU" ] && [ ! -L "drivers/kernelsu" ]; then
             ln -sf ../KernelSU drivers/kernelsu
+          fi
+          if [ -d "KernelSU-Next" ] && [ ! -L "drivers/kernelsu" ]; then
+            ln -sf ../KernelSU-Next/kernel drivers/kernelsu
           fi
 
           CONFIG_FILE="arch/arm64/configs/${{ env.DEFCONFIG_NAME }}"
@@ -246,7 +267,7 @@ jobs:
 
           find kernels -name "Image.*" -exec cp {} AnyKernel3/ \;
 
-          ZIP_NAME="Anykernel3_WildKSU_khaje4gb_${{ github.event.inputs.kernelDevice }}_${BUILD_TIME}.zip"
+          ZIP_NAME="Anykernel3_KSU-Next_khaje4gb_${{ github.event.inputs.kernelDevice }}_${BUILD_TIME}.zip"
           cd AnyKernel3
           zip -r9 "../$ZIP_NAME" * -x .git/*
           cd ..
