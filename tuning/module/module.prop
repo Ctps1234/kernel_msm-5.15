@@ -1,0 +1,6 @@
+id=khaje4gb
+name=Khaje 4GB Tuning (fluidez + bateria)
+version=v1.0.0
+versionCode=10000
+author=arena-agent
+description=Tuning de runtime para Redmi Note 12/13 4G e Redmi Pad SE (SM6225, 4 GB): zram lz4kd, MGLRU, VM, schedutil, I/O e perfis battery/balanced/smooth. Requer o kernel com khaje_4gb_tuning aplicado.

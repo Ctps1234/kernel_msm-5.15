@@ -11,6 +11,8 @@
 # Normal rules (sorted alphabetically)
 #
 .*
+!.github/
+!.github/**
 *.a
 *.asn1.[ch]
 *.bin
