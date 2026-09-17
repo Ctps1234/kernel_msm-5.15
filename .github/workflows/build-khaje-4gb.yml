@@ -1,10 +1,12 @@
-name: "Build Khaje 4GB - KSU Next (build.sh, sem branch builder)"
+name: "Build Khaje 4GB - KSU Next (builtin tuning, sem modulo)"
 
-# Baseado no antigo, mas sem depender de branch builder externa.
+# Baseado no antigo, mas sem depender de branch builder externa e sem modulo externo.
 # - Não usa kernelSourceURL/kernelBranch
 # - Usa checkout atual como fonte do kernel (copia para common_${device}/common)
 # - Continua usando build/build.sh do manifest (repo sync) como antes
 # - Troca WildKSU por KSU Next oficial
+# - Tuning embutido via CONFIG_KHAJE_4GB_BUILTIN_TUNING=y (mm/khaje_builtin_tuning.c)
+#   Elimina necessidade de tuning/build-module.sh
 
 env:
   OUT_DIR: "out"
@@ -254,7 +256,7 @@ jobs:
           retention-days: 3
 
   Package-Kernels:
-    name: "📦 Package kernels"
+    name: "📦 Package kernels (sem modulo externo - builtin)"
     runs-on: ubuntu-latest
     needs: Build-Kernel
     steps:
@@ -263,27 +265,35 @@ jobs:
         with:
           path: ./kernels/
 
-      - name: "📥 Checkout para tuning module (mesmo repo, sem builder)"
-        uses: actions/checkout@v4
-        with:
-          path: ksrc
-          fetch-depth: 1
-
-      - name: "🐚 Tuning module (opcional, builtin já aplica)"
+      - name: "📦 Create flashable ZIP (builtin tuning, sem modulo)"
         run: |
-          echo "Builtin tuning ativo (CONFIG_KHAJE_4GB_BUILTIN_TUNING=y) - módulo externo opcional"
-          if [ -f "ksrc/tuning/build-module.sh" ]; then
-            ( cd ksrc && sh tuning/build-module.sh ) || echo "build-module falhou, ignorando (builtin já cobre)"
-            cp ksrc/tuning/dist/*.zip "$GITHUB_WORKSPACE/khaje-tuning.zip" || true
-          fi
-
-      - name: "📦 Create flashable ZIP"
-        run: |
+          echo "Kernel com tuning embutido CONFIG_KHAJE_4GB_BUILTIN_TUNING=y - nao precisa de modulo externo"
           BUILD_TIME=$(date +'%Y-%m-%d')
           git clone --depth=1 https://github.com/topnotchfreaks/AnyKernel3 -b master AnyKernel3
           find kernels -name "Image.*" -exec cp {} AnyKernel3/ \;
           ls -lh AnyKernel3/Image* || true
-          ZIP_NAME="Anykernel3_KSU-Next_khaje4gb_${{ inputs.kernelDevice }}_${BUILD_TIME}.zip"
+          # Cria README dentro do ZIP explicando que tuning eh builtin
+          cat > AnyKernel3/README_KHAJE_BUILTIN.txt << 'EOF'
+          Khaje 4GB - Tuning embutido no kernel (sem modulo externo)
+          ----------------------------------------------------------
+          Este kernel ja contem otimizacao builtin:
+          - page_cluster=0, watermark_scale_factor=120, vfs_cache_pressure=130
+          - dirty 5/20, swappiness 100, uclamp 0/1024
+          - MGLRU min_ttl 1000ms
+          - zram0 60% RAM lz4kd auto
+          - BBR default, SSG IO, schedutil 2000us / schedhorizon 1000/2000us
+
+          Nao e necessario instalar modulo Magisk/KSU de tuning.
+          tuning/khaje-tune.sh ainda pode ser usado manualmente para trocar
+          perfil, mas nao e obrigatorio.
+
+          Verificacao:
+          cat /proc/sys/vm/page-cluster
+          cat /proc/sys/vm/watermark_scale_factor
+          cat /sys/kernel/mm/lru_gen/min_ttl_ms
+          cat /sys/block/zram0/disksize
+          EOF
+          ZIP_NAME="Anykernel3_KSU-Next_khaje4gb_${{ inputs.kernelDevice }}_${BUILD_TIME}_builtin.zip"
           cd AnyKernel3
           zip -r9 "../$ZIP_NAME" * -x .git/*
           cd ..
@@ -296,12 +306,3 @@ jobs:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_PATH }}
           retention-days: 7
-
-      - name: "📤 Upload tuning module"
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: khaje-4gb-tuning-module
-          path: khaje-tuning.zip
-          retention-days: 7
-          if-no-files-found: warn
