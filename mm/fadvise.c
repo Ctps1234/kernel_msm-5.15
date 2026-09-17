@@ -78,7 +78,7 @@ int generic_fadvise(struct file *file, loff_t offset, loff_t len, int advice)
 
 	switch (advice) {
 	case POSIX_FADV_NORMAL:
-		file->f_u.f_ra.ra_pages = bdi->ra_pages;
+		file->f_ra.ra_pages = bdi->ra_pages;
 		spin_lock(&file->f_lock);
 		file->f_mode &= ~FMODE_RANDOM;
 		spin_unlock(&file->f_lock);
@@ -89,7 +89,7 @@ int generic_fadvise(struct file *file, loff_t offset, loff_t len, int advice)
 		spin_unlock(&file->f_lock);
 		break;
 	case POSIX_FADV_SEQUENTIAL:
-		file->f_u.f_ra.ra_pages = bdi->ra_pages * 2;
+		file->f_ra.ra_pages = bdi->ra_pages * 2;
 		spin_lock(&file->f_lock);
 		file->f_mode &= ~FMODE_RANDOM;
 		spin_unlock(&file->f_lock);

@@ -85,65 +85,23 @@ static int setfl(int fd, struct file * filp, unsigned long arg)
 	return error;
 }
 
-/*
- * Allocate an file->f_owner struct if it doesn't exist, handling racing
- * allocations correctly.
- */
-int file_f_owner_allocate(struct file *file)
-{
-	struct fown_struct *f_owner;
-
-	f_owner = file_f_owner(file);
-	if (f_owner)
-		return 0;
-
-	f_owner = kzalloc(sizeof(struct fown_struct), GFP_KERNEL);
-	if (!f_owner)
-		return -ENOMEM;
-
-	rwlock_init(&f_owner->lock);
-	f_owner->file = file;
-	/* If someone else raced us, drop our allocation. */
-	if (cmpxchg(&file->f_owner, NULL, f_owner))
-		kfree(f_owner);
-	return 0;
-}
-EXPORT_SYMBOL(file_f_owner_allocate);
-
-void file_f_owner_release(struct file *file)
-{
-	struct fown_struct *f_owner;
-
-	f_owner = file_f_owner(file);
-	if (f_owner) {
-		put_pid(f_owner->pid);
-		kfree(f_owner);
-	}
-}
-
 void __f_setown(struct file *filp, struct pid *pid, enum pid_type type,
 		int force)
 {
-	struct fown_struct *f_owner;
-
-	f_owner = file_f_owner(filp);
-	if (WARN_ON_ONCE(!f_owner))
-		return;
-
-	write_lock_irq(&f_owner->lock);
-	if (force || !f_owner->pid) {
-		put_pid(f_owner->pid);
-		f_owner->pid = get_pid(pid);
-		f_owner->pid_type = type;
+	write_lock_irq(&filp->f_owner.lock);
+	if (force || !filp->f_owner.pid) {
+		put_pid(filp->f_owner.pid);
+		filp->f_owner.pid = get_pid(pid);
+		filp->f_owner.pid_type = type;
 
 		if (pid) {
 			const struct cred *cred = current_cred();
 			security_file_set_fowner(filp);
-			f_owner->uid = cred->uid;
-			f_owner->euid = cred->euid;
+			filp->f_owner.uid = cred->uid;
+			filp->f_owner.euid = cred->euid;
 		}
 	}
-	write_unlock_irq(&f_owner->lock);
+	write_unlock_irq(&filp->f_owner.lock);
 }
 EXPORT_SYMBOL(__f_setown);
 
@@ -163,10 +121,6 @@ int f_setown(struct file *filp, unsigned long arg, int force)
 		who = -who;
 	}
 
-	ret = file_f_owner_allocate(filp);
-	if (ret)
-		return ret;
-
 	rcu_read_lock();
 	if (who) {
 		pid = find_vpid(who);
@@ -184,30 +138,22 @@ EXPORT_SYMBOL(f_setown);
 
 void f_delown(struct file *filp)
 {
-	struct fown_struct *f_owner = file_f_owner(filp);
-	if (!f_owner)
-		return;
 	__f_setown(filp, NULL, PIDTYPE_TGID, 1);
 }
 
 pid_t f_getown(struct file *filp)
 {
 	pid_t pid = 0;
-	struct fown_struct *f_owner;
 
-	f_owner = file_f_owner(filp);
-	if (!f_owner)
-		return pid;
-
-	read_lock_irq(&f_owner->lock);
+	read_lock_irq(&filp->f_owner.lock);
 	rcu_read_lock();
-	if (pid_task(f_owner->pid, f_owner->pid_type)) {
-		pid = pid_vnr(f_owner->pid);
-		if (f_owner->pid_type == PIDTYPE_PGID)
+	if (pid_task(filp->f_owner.pid, filp->f_owner.pid_type)) {
+		pid = pid_vnr(filp->f_owner.pid);
+		if (filp->f_owner.pid_type == PIDTYPE_PGID)
 			pid = -pid;
 	}
 	rcu_read_unlock();
-	read_unlock_irq(&f_owner->lock);
+	read_unlock_irq(&filp->f_owner.lock);
 	return pid;
 }
 
@@ -240,10 +186,6 @@ static int f_setown_ex(struct file *filp, unsigned long arg)
 		return -EINVAL;
 	}
 
-	ret = file_f_owner_allocate(filp);
-	if (ret)
-		return ret;
-
 	rcu_read_lock();
 	pid = find_vpid(owner.pid);
 	if (owner.pid && !pid)
@@ -259,21 +201,14 @@ static int f_getown_ex(struct file *filp, unsigned long arg)
 {
 	struct f_owner_ex __user *owner_p = (void __user *)arg;
 	struct f_owner_ex owner = {};
-	struct fown_struct *f_owner;
-	enum pid_type pid_type = PIDTYPE_PID;
 	int ret = 0;
 
-	f_owner = file_f_owner(filp);
-	if (f_owner) {
-		read_lock_irq(&f_owner->lock);
-		rcu_read_lock();
-		if (pid_task(f_owner->pid, f_owner->pid_type))
-			owner.pid = pid_vnr(f_owner->pid);
-		rcu_read_unlock();
-		pid_type = f_owner->pid_type;
-	}
-
-	switch (pid_type) {
+	read_lock_irq(&filp->f_owner.lock);
+	rcu_read_lock();
+	if (pid_task(filp->f_owner.pid, filp->f_owner.pid_type))
+		owner.pid = pid_vnr(filp->f_owner.pid);
+	rcu_read_unlock();
+	switch (filp->f_owner.pid_type) {
 	case PIDTYPE_PID:
 		owner.type = F_OWNER_TID;
 		break;
@@ -291,8 +226,7 @@ static int f_getown_ex(struct file *filp, unsigned long arg)
 		ret = -EINVAL;
 		break;
 	}
-	if (f_owner)
-		read_unlock_irq(&f_owner->lock);
+	read_unlock_irq(&filp->f_owner.lock);
 
 	if (!ret) {
 		ret = copy_to_user(owner_p, &owner, sizeof(owner));
@@ -306,18 +240,14 @@ static int f_getown_ex(struct file *filp, unsigned long arg)
 static int f_getowner_uids(struct file *filp, unsigned long arg)
 {
 	struct user_namespace *user_ns = current_user_ns();
-	struct fown_struct *f_owner;
 	uid_t __user *dst = (void __user *)arg;
-	uid_t src[2] = {0, 0};
+	uid_t src[2];
 	int err;
 
-	f_owner = file_f_owner(filp);
-	if (f_owner) {
-		read_lock_irq(&f_owner->lock);
-		src[0] = from_kuid(user_ns, f_owner->uid);
-		src[1] = from_kuid(user_ns, f_owner->euid);
-		read_unlock_irq(&f_owner->lock);
-	}
+	read_lock_irq(&filp->f_owner.lock);
+	src[0] = from_kuid(user_ns, filp->f_owner.uid);
+	src[1] = from_kuid(user_ns, filp->f_owner.euid);
+	read_unlock_irq(&filp->f_owner.lock);
 
 	err  = put_user(src[0], &dst[0]);
 	err |= put_user(src[1], &dst[1]);
@@ -465,24 +395,17 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 	case F_GETOWNER_UIDS:
 		err = f_getowner_uids(filp, arg);
 		break;
-	case F_GETSIG: {
-		struct fown_struct *f_owner = file_f_owner(filp);
-		err = f_owner ? f_owner->signum : 0;
+	case F_GETSIG:
+		err = filp->f_owner.signum;
 		break;
-	}
-	case F_SETSIG: {
-		struct fown_struct *f_owner;
+	case F_SETSIG:
 		/* arg == 0 restores default behaviour. */
-		if (!valid_signal(arg))
+		if (!valid_signal(arg)) {
 			break;
-		err = file_f_owner_allocate(filp);
-		if (err)
-			break;
-		f_owner = file_f_owner(filp);
+		}
 		err = 0;
-		f_owner->signum = arg;
+		filp->f_owner.signum = arg;
 		break;
-	}
 	case F_GETLEASE:
 		err = fcntl_getlease(filp);
 		break;
@@ -1084,11 +1007,11 @@ static void kill_fasync_rcu(struct fasync_struct *fa, int sig, int band)
 		}
 		read_lock_irqsave(&fa->fa_lock, flags);
 		if (fa->fa_file) {
-			fown = file_f_owner(fa->fa_file);
+			fown = &fa->fa_file->f_owner;
 			/* Don't send SIGURG to processes which have not set a
 			   queued signum: SIGURG has its own default signalling
 			   mechanism. */
-			if (fown && !(sig == SIGURG && fown->signum == 0))
+			if (!(sig == SIGURG && fown->signum == 0))
 				send_sigio(fown, fa->fa_fd, band);
 		}
 		read_unlock_irqrestore(&fa->fa_lock, flags);

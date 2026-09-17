@@ -4839,7 +4839,7 @@ static int f2fs_file_fadvise(struct file *filp, loff_t offset, loff_t len,
 			return -EINVAL;
 
 		bdi = inode_to_bdi(mapping->host);
-		filp->f_u.f_ra.ra_pages = bdi->ra_pages *
+		filp->f_ra.ra_pages = bdi->ra_pages *
 			F2FS_I_SB(inode)->seq_file_ra_mul;
 		spin_lock(&filp->f_lock);
 		filp->f_mode &= ~FMODE_RANDOM;

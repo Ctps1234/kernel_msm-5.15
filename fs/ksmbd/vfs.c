@@ -966,7 +966,7 @@ void ksmbd_vfs_set_fadvise(struct file *filp, __le32 option)
 	if (option & FILE_WRITE_THROUGH_LE) {
 		filp->f_flags |= O_SYNC;
 	} else if (option & FILE_SEQUENTIAL_ONLY_LE) {
-		filp->f_u.f_ra.ra_pages = inode_to_bdi(mapping->host)->ra_pages * 2;
+		filp->f_ra.ra_pages = inode_to_bdi(mapping->host)->ra_pages * 2;
 		spin_lock(&filp->f_lock);
 		filp->f_mode &= ~FMODE_RANDOM;
 		spin_unlock(&filp->f_lock);

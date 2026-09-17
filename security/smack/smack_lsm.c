@@ -1795,9 +1795,9 @@ static int smack_file_send_sigiotask(struct task_struct *tsk,
 	struct smk_audit_info ad;
 
 	/*
-	 * fown contains file backpointer
+	 * struct fown_struct is never outside the context of a struct file
 	 */
-	file = fown->file;
+	file = container_of(fown, struct file, f_owner);
 
 	/* we don't log here as rc can be overriden */
 	blob = smack_file(file);

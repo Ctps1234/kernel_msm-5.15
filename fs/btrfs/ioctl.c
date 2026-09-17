@@ -1456,7 +1456,7 @@ int btrfs_defrag_file(struct inode *inode, struct file *file,
 		if (ra)
 			file_ra_state_init(ra, inode->i_mapping);
 	} else {
-		ra = &file->f_u.f_ra;
+		ra = &file->f_ra;
 	}
 
 	pages = kmalloc_array(max_cluster, sizeof(struct page *), GFP_KERNEL);

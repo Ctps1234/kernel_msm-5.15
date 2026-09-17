@@ -112,7 +112,7 @@ static int gfs2_readdir(struct file *file, struct dir_context *ctx)
 	if (error)
 		return error;
 
-	error = gfs2_dir_read(dir, ctx, &file->f_u.f_ra);
+	error = gfs2_dir_read(dir, ctx, &file->f_ra);
 
 	gfs2_glock_dq_uninit(&d_gh);
 

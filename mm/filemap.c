@@ -2407,7 +2407,7 @@ static int filemap_read_page(struct file *file, struct address_space *mapping,
 		return error;
 	if (PageUptodate(page))
 		return 0;
-	shrink_readahead_size_eio(&file->f_u.f_ra);
+	shrink_readahead_size_eio(&file->f_ra);
 	return -EIO;
 }
 
@@ -2537,7 +2537,7 @@ static int filemap_readahead(struct kiocb *iocb, struct file *file,
 {
 	if (iocb->ki_flags & IOCB_NOIO)
 		return -EAGAIN;
-	page_cache_async_readahead(mapping, &file->f_u.f_ra, file, page,
+	page_cache_async_readahead(mapping, &file->f_ra, file, page,
 			page->index, last_index - page->index);
 	return 0;
 }
@@ -2547,7 +2547,7 @@ static int filemap_get_pages(struct kiocb *iocb, struct iov_iter *iter,
 {
 	struct file *filp = iocb->ki_filp;
 	struct address_space *mapping = filp->f_mapping;
-	struct file_ra_state *ra = &filp->f_u.f_ra;
+	struct file_ra_state *ra = &filp->f_ra;
 	pgoff_t index = iocb->ki_pos >> PAGE_SHIFT;
 	pgoff_t last_index;
 	struct page *page;
@@ -2622,7 +2622,7 @@ ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
 		ssize_t already_read)
 {
 	struct file *filp = iocb->ki_filp;
-	struct file_ra_state *ra = &filp->f_u.f_ra;
+	struct file_ra_state *ra = &filp->f_ra;
 	struct address_space *mapping = filp->f_mapping;
 	struct inode *inode = mapping->host;
 	struct pagevec pvec;
@@ -2975,7 +2975,7 @@ static int lock_page_maybe_drop_mmap(struct vm_fault *vmf, struct page *page,
 static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
 {
 	struct file *file = vmf->vma->vm_file;
-	struct file_ra_state *ra = &file->f_u.f_ra;
+	struct file_ra_state *ra = &file->f_ra;
 	struct address_space *mapping = file->f_mapping;
 	DEFINE_READAHEAD(ractl, file, ra, mapping, vmf->pgoff);
 	struct file *fpin = NULL;
@@ -3028,7 +3028,7 @@ static struct file *do_async_mmap_readahead(struct vm_fault *vmf,
 					    struct page *page)
 {
 	struct file *file = vmf->vma->vm_file;
-	struct file_ra_state *ra = &file->f_u.f_ra;
+	struct file_ra_state *ra = &file->f_ra;
 	struct address_space *mapping = file->f_mapping;
 	struct file *fpin = NULL;
 	unsigned int mmap_miss;
@@ -3079,7 +3079,7 @@ vm_fault_t filemap_fault(struct vm_fault *vmf)
 	struct file *file = vmf->vma->vm_file;
 	struct file *fpin = NULL;
 	struct address_space *mapping = file->f_mapping;
-	struct file_ra_state *ra = &file->f_u.f_ra;
+	struct file_ra_state *ra = &file->f_ra;
 	struct inode *inode = mapping->host;
 	pgoff_t offset = vmf->pgoff;
 	pgoff_t max_off;
@@ -3381,7 +3381,7 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 	unsigned long addr;
 	XA_STATE(xas, &mapping->i_pages, start_pgoff);
 	struct page *head, *page;
-	unsigned int mmap_miss = READ_ONCE(file->f_u.f_ra.mmap_miss);
+	unsigned int mmap_miss = READ_ONCE(file->f_ra.mmap_miss);
 	vm_fault_t ret = (vmf->flags & FAULT_FLAG_SPECULATIVE) ?
 		VM_FAULT_RETRY : 0;
 	pgoff_t first_pgoff = 0;
@@ -3436,7 +3436,7 @@ unlock:
 	} while ((head = next_map_page(mapping, &xas, end_pgoff)) != NULL);
 	pte_unmap_unlock(vmf->pte, vmf->ptl);
 	vmf->pte = NULL;
-	WRITE_ONCE(file->f_u.f_ra.mmap_miss, mmap_miss);
+	WRITE_ONCE(file->f_ra.mmap_miss, mmap_miss);
 	trace_android_vh_filemap_map_pages(file, first_pgoff, last_pgoff, ret);
 	return ret;
 }

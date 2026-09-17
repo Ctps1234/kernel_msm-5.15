@@ -1129,7 +1129,7 @@ static int f2fs_readdir(struct file *file, struct dir_context *ctx)
 	unsigned long npages = dir_blocks(inode);
 	struct f2fs_dentry_block *dentry_blk = NULL;
 	struct page *dentry_page = NULL;
-	struct file_ra_state *ra = &file->f_u.f_ra;
+	struct file_ra_state *ra = &file->f_ra;
 	loff_t start_pos = ctx->pos;
 	unsigned int n = ((unsigned long)ctx->pos / NR_DENTRY_IN_BLOCK);
 	struct f2fs_dentry_ptr d;

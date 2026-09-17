@@ -1792,7 +1792,7 @@ static void collapse_file(struct mm_struct *mm,
 		} else {	/* !is_shmem */
 			if (!page || xa_is_value(page)) {
 				xas_unlock_irq(&xas);
-				page_cache_sync_readahead(mapping, &file->f_u.f_ra,
+				page_cache_sync_readahead(mapping, &file->f_ra,
 							  file, index,
 							  end - index);
 				/* drain pagevecs to help isolate_lru_page() */

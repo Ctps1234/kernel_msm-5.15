@@ -141,8 +141,7 @@ static struct file *__alloc_file(int flags, const struct cred *cred)
 	}
 
 	atomic_long_set(&f->f_count, 1);
-	/* f_owner is allocated on demand */
-	WRITE_ONCE(f->f_owner, NULL);
+	rwlock_init(&f->f_owner.lock);
 	spin_lock_init(&f->f_lock);
 	mutex_init(&f->f_pos_lock);
 	f->f_flags = flags;
@@ -315,7 +314,7 @@ static void __fput(struct file *file)
 		cdev_put(inode->i_cdev);
 	}
 	fops_put(file->f_op);
-	file_f_owner_release(file);
+	put_pid(file->f_owner.pid);
 	put_file_access(file);
 	dput(dentry);
 	if (unlikely(mode & FMODE_NEED_UNMOUNT))
