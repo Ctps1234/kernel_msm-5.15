@@ -2296,20 +2296,8 @@ static void handle_reclaim_writeback(unsigned long nr_taken,
 	 * the flushers simply cannot keep up with the allocation
 	 * rate. Nudge the flusher threads in case they are asleep.
 	 */
-	if (stat->nr_unqueued_dirty == nr_taken && nr_taken) {
+	if (stat->nr_unqueued_dirty == nr_taken && nr_taken)
 		wakeup_flusher_threads(WB_REASON_VMSCAN);
-		/*
-		 * For cgroupv1 dirty throttling is achieved by waking up
-		 * the kernel flusher here and later waiting on pages
-		 * which are in writeback to finish (see shrink_page_list()).
-		 *
-		 * Flusher may not be able to issue writeback quickly
-		 * enough for cgroupv1 writeback throttling to work
-		 * on a large system.
-		 */
-		if (!writeback_throttling_sane(sc))
-			reclaim_throttle(pgdat, VMSCAN_THROTTLE_WRITEBACK);
-	}
 
 	sc->nr.dirty += stat->nr_dirty;
 	sc->nr.congested += stat->nr_congested;
@@ -4672,7 +4660,7 @@ bool isolate_page(struct lruvec *lruvec, struct page *page, struct scan_control 
 EXPORT_SYMBOL_GPL(isolate_page);
 
 static int scan_pages(unsigned long nr_to_scan, struct lruvec *lruvec, struct scan_control *sc,
-		      int type, int tier, struct list_head *list, int *isolatedp)
+	      int type, int tier, struct list_head *list, int *isolatedp)
 {
 	int i;
 	int gen;
@@ -4680,7 +4668,6 @@ static int scan_pages(unsigned long nr_to_scan, struct lruvec *lruvec, struct sc
 	int sorted = 0;
 	int scanned = 0;
 	int isolated = 0;
-	unsigned long remaining = nr_to_scan;
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
 	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
 
@@ -5063,7 +5050,7 @@ static void lru_gen_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc
 			DEFINE_MAX_SEQ(lruvec);
 			DEFINE_MIN_SEQ(lruvec);
 
-			if (mem_cgroup_below_min(sc->target_mem_cgroup, memcg) ||
+			if (mem_cgroup_below_min(memcg) ||
 			    (mem_cgroup_below_low(memcg) && !sc->memcg_low_reclaim)) {
 				need_rotate = true;
 				break;
