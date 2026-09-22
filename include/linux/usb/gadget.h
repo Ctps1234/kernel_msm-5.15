@@ -27,6 +27,7 @@
 #include <linux/types.h>
 #include <linux/workqueue.h>
 #include <linux/usb/ch9.h>
+#include <linux/android_kabi.h>
 
 #define UDC_TRACE_STR_MAX	512
 

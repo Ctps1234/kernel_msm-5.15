@@ -18,6 +18,7 @@
 #include <linux/klist.h>
 #include <linux/pm.h>
 #include <linux/device/bus.h>
+#include <linux/android_kabi.h>
 
 /**
  * enum probe_type - device driver probe type to try

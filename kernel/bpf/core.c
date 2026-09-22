@@ -1820,8 +1820,7 @@ void bpf_patch_call_args(struct bpf_insn *insn, u32 stack_depth)
 	insn->code = BPF_JMP | BPF_CALL_ARGS;
 }
 
-#endif
-
+#else
 static unsigned int __bpf_prog_ret0_warn(const void *ctx,
 					 const struct bpf_insn *insn)
 {
@@ -1831,30 +1830,75 @@ static unsigned int __bpf_prog_ret0_warn(const void *ctx,
 	WARN_ON_ONCE(1);
 	return 0;
 }
+#endif
 
-bool bpf_prog_array_compatible(struct bpf_array *array,
-			       const struct bpf_prog *fp)
+static bool __bpf_prog_map_compatible(struct bpf_map *map,
+			      const struct bpf_prog *fp)
 {
-	bool ret;
+	enum bpf_prog_type prog_type = fp->aux->dst_prog ? fp->aux->dst_prog->type : fp->type;
+	struct bpf_prog_aux *aux = fp->aux;
+	enum bpf_cgroup_storage_type i;
+	bool ret = false;
+	u64 cookie;
 
 	if (fp->kprobe_override)
-		return false;
+		return ret;
 
-	spin_lock(&array->aux->owner.lock);
-
-	if (!array->aux->owner.type) {
-		/* There's no owner yet where we could check for
-		 * compatibility.
-		 */
-		array->aux->owner.type  = fp->type;
-		array->aux->owner.jited = fp->jited;
+	spin_lock(&map->owner_lock);
+	/* There's no owner yet where we could check for compatibility. */
+	if (!map->owner) {
+		map->owner = bpf_map_owner_alloc(map);
+		if (!map->owner)
+			goto err;
+		map->owner->type  = prog_type;
+		map->owner->jited = fp->jited;
+		map->owner->expected_attach_type = fp->expected_attach_type;
+		map->owner->attach_func_proto = aux->attach_func_proto;
+		for_each_cgroup_storage_type(i) {
+			map->owner->storage_cookie[i] =
+				aux->cgroup_storage[i] ?
+				aux->cgroup_storage[i]->cookie : 0;
+		}
 		ret = true;
 	} else {
-		ret = array->aux->owner.type  == fp->type &&
-		      array->aux->owner.jited == fp->jited;
+		ret = map->owner->type  == prog_type &&
+		      map->owner->jited == fp->jited;
+		if (ret &&
+		    map->map_type == BPF_MAP_TYPE_PROG_ARRAY &&
+		    map->owner->expected_attach_type != fp->expected_attach_type)
+			ret = false;
+		for_each_cgroup_storage_type(i) {
+			if (!ret)
+				break;
+			cookie = aux->cgroup_storage[i] ?
+				 aux->cgroup_storage[i]->cookie : 0;
+			ret = map->owner->storage_cookie[i] == cookie ||
+			      (!cookie && !aux->tail_call_reachable);
+		}
+		if (ret &&
+		    map->owner->attach_func_proto != aux->attach_func_proto) {
+			switch (prog_type) {
+			case BPF_PROG_TYPE_TRACING:
+			case BPF_PROG_TYPE_LSM:
+			case BPF_PROG_TYPE_EXT:
+			case BPF_PROG_TYPE_STRUCT_OPS:
+				ret = false;
+				break;
+			default:
+				break;
+			}
+		}
 	}
-	spin_unlock(&array->aux->owner.lock);
+err:
+	spin_unlock(&map->owner_lock);
 	return ret;
+}
+
+bool bpf_prog_array_compatible(struct bpf_array *array,
+		       const struct bpf_prog *fp)
+{
+	struct bpf_map *map = &array->map;
+	return __bpf_prog_map_compatible(map, fp);
 }
 
 static int bpf_check_tail_call(const struct bpf_prog *fp)
@@ -1882,27 +1926,15 @@ out:
 	return ret;
 }
 
-static bool bpf_prog_select_interpreter(struct bpf_prog *fp)
+static void bpf_prog_select_func(struct bpf_prog *fp)
 {
-	bool select_interpreter = false;
 #ifndef CONFIG_BPF_JIT_ALWAYS_ON
 	u32 stack_depth = max_t(u32, fp->aux->stack_depth, 1);
-	u32 idx = (round_up(stack_depth, 32) / 32) - 1;
 
-	/* may_goto may cause stack size > 512, leading to idx out-of-bounds.
-	 * But for non-JITed programs, we don't need bpf_func, so no bounds
-	 * check needed.
-	 */
-	if (idx < ARRAY_SIZE(interpreters)) {
-		fp->bpf_func = interpreters[idx];
-		select_interpreter = true;
-	} else {
-		fp->bpf_func = __bpf_prog_ret0_warn;
-	}
+	fp->bpf_func = interpreters[(round_up(stack_depth, 32) / 32) - 1];
 #else
 	fp->bpf_func = __bpf_prog_ret0_warn;
 #endif
-	return select_interpreter;
 }
 
 /**
@@ -1921,7 +1953,7 @@ struct bpf_prog *bpf_prog_select_runtime(struct bpf_prog *fp, int *err)
 	/* In case of BPF to BPF calls, verifier did all the prep
 	 * work with regards to JITing, etc.
 	 */
-	bool jit_needed = false;
+	bool jit_needed = fp->jit_requested;
 
 	if (fp->bpf_func)
 		goto finalize;
@@ -1930,8 +1962,7 @@ struct bpf_prog *bpf_prog_select_runtime(struct bpf_prog *fp, int *err)
 	    bpf_prog_has_kfunc_call(fp))
 		jit_needed = true;
 
-	if (!bpf_prog_select_interpreter(fp))
-		jit_needed = true;
+	bpf_prog_select_func(fp);
 
 	/* eBPF JITs can rewrite the program in case constant
 	 * blinding is active. However, in case of error during

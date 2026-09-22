@@ -46,6 +46,7 @@
 #include <linux/atomic.h>
 #include <linux/uidgid.h>
 #include <linux/projid.h>
+#include <linux/android_kabi.h>
 #include <uapi/linux/quota.h>
 
 #undef USRQUOTA

@@ -6,6 +6,7 @@
 #include <linux/mod_devicetable.h>
 #include <linux/usb/typec.h>
 #include <linux/device.h>
+#include <linux/android_kabi.h>
 
 #define MODE_DISCOVERY_MAX	6
 
